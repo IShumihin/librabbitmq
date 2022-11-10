@@ -5,9 +5,11 @@ from setuptools import setup, find_packages
 
 # --with-librabbitmq=<dir>: path to librabbitmq package if needed
 
-LRMQDIST = lambda *x: os.path.join('rabbitmq-c', *x)
+BASE_PATH = os.path.dirname(__file__)
+
+LRMQDIST = lambda *x: os.path.join(BASE_PATH, 'rabbitmq-c', *x)
 LRMQSRC = lambda *x: LRMQDIST('librabbitmq', *x)
-PYCP = lambda *x: os.path.join('Modules', '_librabbitmq', *x)
+PYCP = lambda *x: os.path.join(BASE_PATH, 'Modules', '_librabbitmq', *x)
 
 
 def senv(*k__v, **kwargs):
@@ -49,6 +51,10 @@ def create_builder():
     sys.argv[1:] = unprocessed
 
     incdirs.append(LRMQSRC())
+    if find_cmake() != "":
+        incdirs.append(LRMQDIST('build', 'librabbitmq'))
+
+
     PyC_files = map(PYCP, [
         'connection.c',
     ])
@@ -104,6 +110,9 @@ def create_builder():
 
             here = os.path.abspath(os.getcwd())
             config = sysconfig.get_config_vars()
+            make = find_make()
+            cmake = find_cmake()
+
             try:
                 vars = {'ld': config['LDFLAGS'],
                         'c': config['CFLAGS']}
@@ -117,13 +126,39 @@ def create_builder():
                     ('CFLAGS', vars['c']),
                     ('LDFLAGS', vars['ld']),
                 )
+
                 try:
+                    if not os.path.isdir(os.path.join(LRMQDIST(), '.git')):
+                        print('- pull submodule rabbitmq-c...')
+                        os.system(' '.join(['git', 'clone', '-b', 'v0.8.0',
+                                            'https://github.com/alanxz/rabbitmq-c.git',
+                                            'rabbitmq-c']))
+
                     os.chdir(LRMQDIST())
-                    if not os.path.isfile('config.h'):
+
+                    if cmake == "" and not os.path.isfile('configure'):
+                        print('- autoreconf')
+                        os.system('autoreconf -i')
+
+                    if cmake == "" and not os.path.isfile('config.h'):
                         print('- configure rabbitmq-c...')
                         if os.system('/bin/sh configure --disable-tools \
                                 --disable-docs --disable-dependency-tracking'):
                             return
+
+                    if cmake:
+                        print('- cmake rabbitmq-c...')
+                        if os.system('mkdir -p build'):
+                            return
+
+                        os.chdir('build')
+                        if not os.path.isfile('Makefile'):
+                            if os.system(cmake + ' ..'):
+                                return
+
+                        if os.system(make + ' rabbitmq rabbitmq-static'):
+                            return
+
                 finally:
                     os.environ.update(restore)
             finally:
@@ -145,7 +180,22 @@ def find_make(alt=('gmake', 'gnumake', 'make', 'nmake')):
                 return make
 
 
-long_description = open('README.rst', 'U').read()
+def find_cmake():
+    for path in os.environ['PATH'].split(':'):
+        make = os.path.join(path, 'cmake')
+        if os.path.isfile(make):
+            return make
+
+    return ""
+
+
+if sys.version_info[0] < 3:
+    with open(os.path.join(BASE_PATH, 'README.rst'), 'U') as f:
+        long_description = f.read()
+else:
+    with open(os.path.join(BASE_PATH, 'README.rst')) as f:
+        long_description = f.read()
+
 distmeta = open(PYCP('distmeta.h')).read().strip().splitlines()
 distmeta = [item.split('\"')[1] for item in distmeta]
 version = distmeta[0].strip()
@@ -185,21 +235,28 @@ if not goahead:
 if 'install' in sys.argv and 'build' not in sys.argv:
     _index = sys.argv.index('install')
     sys.argv[:] = (
-        sys.argv[:_index] + ['build', 'install'] + sys.argv[_index + 1:]
+            sys.argv[:_index] + ['build', 'install'] + sys.argv[_index + 1:]
     )
-    
+
+# 'bdist_wheel doesn't always call build for some reason
+if 'bdist_wheel' in sys.argv and 'build' not in sys.argv:
+    _index = sys.argv.index('bdist_wheel')
+    sys.argv[:] = (
+            sys.argv[:_index] + ['build', 'bdist_wheel'] + sys.argv[_index + 1:]
+    )
+
 # 'bdist_egg doesn't always call build for some reason
 if 'bdist_egg' in sys.argv and 'build' not in sys.argv:
     _index = sys.argv.index('bdist_egg')
     sys.argv[:] = (
-        sys.argv[:_index] + ['build', 'bdist_egg'] + sys.argv[_index + 1:]
+            sys.argv[:_index] + ['build', 'bdist_egg'] + sys.argv[_index + 1:]
     )
 
 # 'test doesn't always call build for some reason
 if 'test' in sys.argv and 'build' not in sys.argv:
     _index = sys.argv.index('test')
     sys.argv[:] = (
-        sys.argv[:_index] + ['build', 'test'] + sys.argv[_index + 1:]
+            sys.argv[:_index] + ['build', 'test'] + sys.argv[_index + 1:]
     )
 
 setup(
@@ -211,7 +268,7 @@ setup(
     license='MPL',
     description='AMQP Client using the rabbitmq-c library.',
     long_description=long_description,
-    test_suite='nose.collector',
+    test_suite="tests",
     zip_safe=False,
     packages=packages,
     cmdclass=cmdclass,
